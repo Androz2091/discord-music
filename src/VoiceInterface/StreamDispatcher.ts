@@ -74,13 +74,21 @@ class StreamDispatcher extends EventEmitter<VoiceEvents> {
                     try {
                         await entersState(this.voiceConnection, VoiceConnectionStatus.Connecting, this.connectionTimeout);
                     } catch {
-                        this.voiceConnection.destroy();
+                        try {
+                            this.voiceConnection.destroy();
+                        } catch (err) {
+                            this.emit("error", err as AudioPlayerError);
+                        }
                     }
                 } else if (this.voiceConnection.rejoinAttempts < 5) {
                     await Util.wait((this.voiceConnection.rejoinAttempts + 1) * 5000);
                     this.voiceConnection.rejoin();
                 } else {
-                    this.voiceConnection.destroy();
+                    try {
+                        this.voiceConnection.destroy();
+                    } catch (err) {
+                        this.emit("error", err as AudioPlayerError);
+                    }
                 }
             } else if (newState.status === VoiceConnectionStatus.Destroyed) {
                 this.end();
@@ -89,7 +97,13 @@ class StreamDispatcher extends EventEmitter<VoiceEvents> {
                 try {
                     await entersState(this.voiceConnection, VoiceConnectionStatus.Ready, this.connectionTimeout);
                 } catch {
-                    if (this.voiceConnection.state.status !== VoiceConnectionStatus.Destroyed) this.voiceConnection.destroy();
+                    if (this.voiceConnection.state.status !== VoiceConnectionStatus.Destroyed) {
+                        try {
+                            this.voiceConnection.destroy();
+                        } catch (err) {
+                            this.emit("error", err as AudioPlayerError);
+                        }
+                    }
                 } finally {
                     this.readyLock = false;
                 }
