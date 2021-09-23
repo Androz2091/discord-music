@@ -26,6 +26,8 @@ class Queue<T = unknown> {
     public _cooldownsTimeout = new Collection<string, NodeJS.Timeout>();
     private _activeFilters: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
     private _filtersUpdate = false;
+    private _trackSkipped = false;
+    private _leaveTimeout: NodeJS.Timeout = null;
     #lastVolume = 0;
     #destroyed = false;
     public createStream: (track: Track, source: TrackSource, queue: Queue) => Promise<Readable> | Readable = null;
@@ -174,9 +176,14 @@ class Queue<T = unknown> {
 
         this.connection.on("start", (resource) => {
             if (this.#watchDestroyed(false)) return;
+            if (this._leaveTimeout != null) {
+                clearTimeout(this._leaveTimeout);
+                this._leaveTimeout = null;
+            }
             this.playing = true;
             if (!this._filtersUpdate && resource?.metadata) this.player.emit("trackStart", this, resource?.metadata ?? this.current);
             this._filtersUpdate = false;
+            this._trackSkipped = false;
         });
 
         this.connection.on("finish", async (resource) => {
@@ -184,16 +191,16 @@ class Queue<T = unknown> {
             this.playing = false;
             if (this._filtersUpdate) return;
             this._streamTime = 0;
-            if (resource && resource.metadata) this.previousTracks.push(resource.metadata);
 
             this.player.emit("trackEnd", this, resource.metadata);
 
             if (!this.tracks.length && this.repeatMode === QueueRepeatMode.OFF) {
                 if (this.options.leaveOnEnd) this.destroy();
+                if (this.options.leaveOnEmpty) this._leaveTimeout = setTimeout(() => {this.destroy();}, this.options.leaveOnEmptyCooldown);
                 this.player.emit("queueEnd", this);
             } else {
                 if (this.repeatMode !== QueueRepeatMode.AUTOPLAY) {
-                    if (this.repeatMode === QueueRepeatMode.TRACK) return void this.play(Util.last(this.previousTracks), { immediate: true });
+                    if (this.repeatMode === QueueRepeatMode.TRACK && !this._trackSkipped) return void this.play(Util.last(this.previousTracks), { immediate: true });
                     if (this.repeatMode === QueueRepeatMode.QUEUE) this.tracks.push(Util.last(this.previousTracks));
                     const nextTrack = this.tracks.shift();
                     this.play(nextTrack, { immediate: true });
@@ -229,6 +236,7 @@ class Queue<T = unknown> {
         if (this.#watchDestroyed()) return;
         if (!this.connection) return false;
         this._filtersUpdate = false;
+        this._trackSkipped = true;
         this.connection.end();
         return true;
     }
@@ -422,9 +430,10 @@ class Queue<T = unknown> {
      */
     async back() {
         if (this.#watchDestroyed()) return;
-        const prev = this.previousTracks[this.previousTracks.length - 2]; // because last item is the current track
-        if (!prev) throw new PlayerError("Could not find previous track", ErrorStatusCode.TRACK_NOT_FOUND);
-
+        if (this.previousTracks.length < 2) throw new PlayerError("Could not find previous track", ErrorStatusCode.TRACK_NOT_FOUND);
+        const current = this.previousTracks.pop();
+        const prev = this.previousTracks.pop(); // because last item is the current track
+        this.tracks.unshift(current);
         return await this.play(prev, { immediate: true });
     }
 
@@ -453,14 +462,11 @@ class Queue<T = unknown> {
     shuffle() {
         if (this.#watchDestroyed()) return;
         if (!this.tracks.length || this.tracks.length < 3) return false;
-        const currentTrack = this.tracks.shift();
 
         for (let i = this.tracks.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [this.tracks[i], this.tracks[j]] = [this.tracks[j], this.tracks[i]];
         }
-
-        this.tracks.unshift(currentTrack);
 
         return true;
     }
@@ -624,7 +630,6 @@ class Queue<T = unknown> {
         if (src && (this.playing || this.tracks.length) && !options.immediate) return this.addTrack(src);
         const track = options.filtersUpdate && !options.immediate ? src || this.current : src ?? this.tracks.shift();
         if (!track) return;
-
         this.player.emit("debug", this, "Received play request");
 
         if (!options.filtersUpdate) {
